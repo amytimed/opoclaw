@@ -1,4 +1,4 @@
-import { readFileAsync, editFile, listFiles } from "./workspace.ts";
+import { readFileAsync, getFilePath, editFile, listFiles } from "./workspace.ts";
 
 export const TOOL_DEFINITIONS = [
     {
@@ -53,7 +53,36 @@ export const TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        type: "function",
+        function: {
+            name: "send_file",
+            description:
+                "Send a file from the workspace as a Discord attachment. The file will be sent after the agent's response.",
+            parameters: {
+                type: "object",
+                properties: {
+                    path: {
+                        type: "string",
+                        description: "Relative path to the file within the workspace.",
+                    },
+                    caption: {
+                        type: "string",
+                        description: "Optional caption for the file.",
+                    },
+                },
+                required: ["path"],
+            },
+        },
+    },
 ] as const;
+
+// Track pending file sends (picked up by index.ts after tool execution)
+export let pendingFileSend: { path: string; caption: string } | null = null;
+
+export function clearPendingFileSend(): void {
+    pendingFileSend = null;
+}
 
 export async function handleToolCall(
     name: string,
@@ -77,6 +106,14 @@ export async function handleToolCall(
             return files.length > 0
                 ? files.map((f) => `• ${f}`).join("\n")
                 : "(workspace is empty)";
+        }
+        case "send_file": {
+            if (!args.path) throw new Error("Missing 'path' argument for send_file.");
+            // Validate file exists
+            getFilePath(args.path);
+            // Queue file for sending after response
+            pendingFileSend = { path: args.path, caption: args.caption || "" };
+            return `File "${args.path}" queued for sending.`;
         }
         default:
             throw new Error(`Unknown tool: ${name}`);

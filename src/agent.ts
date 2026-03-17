@@ -20,26 +20,90 @@ interface ToolCall {
 interface Config {
     openrouterKey: string;
     openrouterModel: string;
+    enableReasoning?: boolean;
+    reasoningSummary?: boolean;
+    reasoningSummaryModel?: string;
+}
+
+interface UsageStats {
+    total: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+    sessions: Array<{
+        timestamp: string;
+        model: string;
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+        cost: number;
+    }>;
+}
+
+const USAGE_FILE = new URL("../usage.json", import.meta.url).pathname;
+
+async function loadUsage(): Promise<UsageStats> {
+    try {
+        const file = Bun.file(USAGE_FILE);
+        if (await file.exists()) {
+            return await file.json();
+        }
+    } catch {}
+    return { total: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }, sessions: [] };
+}
+
+async function saveUsage(stats: UsageStats): Promise<void> {
+    await Bun.write(USAGE_FILE, JSON.stringify(stats, null, 2));
+}
+
+async function recordUsage(usage: any, model: string): Promise<void> {
+    if (!usage) return;
+    const stats = await loadUsage();
+    const entry = {
+        timestamp: new Date().toISOString(),
+        model,
+        input: usage.prompt_tokens || 0,
+        output: usage.completion_tokens || 0,
+        cacheRead: usage.prompt_tokens_details?.cached_tokens || 0,
+        cacheWrite: usage.prompt_tokens_details?.cache_write_tokens || 0,
+        cost: usage.cost || 0,
+    };
+    stats.sessions.push(entry);
+    stats.total.input += entry.input;
+    stats.total.output += entry.output;
+    stats.total.cacheRead += entry.cacheRead;
+    stats.total.cacheWrite += entry.cacheWrite;
+    stats.total.cost += entry.cost;
+    // Keep last 500 entries
+    if (stats.sessions.length > 500) {
+        stats.sessions = stats.sessions.slice(-500);
+    }
+    await saveUsage(stats);
 }
 
 async function streamCompletion(
     messages: Message[],
     config: Config,
     onFirstToken: () => void
-): Promise<{ text: string | null; toolCalls: ToolCall[] }> {
+): Promise<{ text: string | null; toolCalls: ToolCall[]; usage: any }> {
+    const body: any = {
+        model: config.openrouterModel,
+        messages,
+        tools: TOOL_DEFINITIONS,
+        tool_choice: "auto",
+        stream: true,
+    };
+
+    // Add reasoning toggle
+    if (config.enableReasoning) {
+        body.reasoning = { enabled: true };
+    }
+
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
             Authorization: `Bearer ${config.openrouterKey}`,
             "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-            model: config.openrouterModel,
-            messages,
-            tools: TOOL_DEFINITIONS,
-            tool_choice: "auto",
-            stream: true,
-        }),
+        body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -52,14 +116,9 @@ async function streamCompletion(
 
     let textBuffer = "";
     let firstToken = false;
-
-    // Accumulate tool call deltas indexed by index
-    const toolCallMap: Record<
-        number,
-        { id: string; name: string; arguments: string }
-    > = {};
-
+    const toolCallMap: Record<number, { id: string; name: string; arguments: string }> = {};
     let finishReason: string | null = null;
+    let usage: any = null;
 
     while (true) {
         const { done, value } = await reader.read();
@@ -81,16 +140,19 @@ async function streamCompletion(
 
             finishReason = choice.finish_reason ?? finishReason;
 
+            // Capture usage from the chunk (OpenRouter sends it per-stream)
+            if (parsed.usage) {
+                usage = parsed.usage;
+            }
+
             const delta = choice.delta;
             if (!delta) continue;
 
-            // Reasoning tokens (thinking models like Qwen)
             if ((delta as any).reasoning && !firstToken) {
                 firstToken = true;
                 onFirstToken();
             }
 
-            // Text content
             if (delta.content) {
                 if (!firstToken) {
                     firstToken = true;
@@ -99,7 +161,6 @@ async function streamCompletion(
                 textBuffer += delta.content;
             }
 
-            // Tool call deltas
             if (delta.tool_calls) {
                 for (const tc of delta.tool_calls) {
                     const idx: number = tc.index ?? 0;
@@ -111,7 +172,6 @@ async function streamCompletion(
                     if (tc.function?.arguments) toolCallMap[idx].arguments += tc.function.arguments;
                 }
 
-                // Fire onFirstToken for tool calls too (spinner should start)
                 if (!firstToken) {
                     firstToken = true;
                     onFirstToken();
@@ -126,16 +186,45 @@ async function streamCompletion(
         function: { name: tc.name, arguments: tc.arguments },
     }));
 
-    return { text: textBuffer || null, toolCalls };
+    return { text: textBuffer || null, toolCalls, usage };
+}
+
+async function generateReasoningSummary(
+    reasoningText: string,
+    config: Config
+): Promise<string> {
+    const model = config.reasoningSummaryModel || config.openrouterModel;
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${config.openrouterKey}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            model,
+            messages: [
+                {
+                    role: "user",
+                    content: `Summarize this reasoning in one short sentence (no markdown, just plain text):\n\n${reasoningText.slice(0, 3000)}`,
+                },
+            ],
+            stream: false,
+            max_tokens: 100,
+        }),
+    });
+
+    if (!response.ok) return "(reasoning summary failed)";
+
+    const data: any = await response.json();
+    return data.choices?.[0]?.message?.content?.trim() || "(no summary)";
 }
 
 export async function runAgent(
     history: Message[],
     systemPrompt: string,
     config: Config,
-    onFirstToken: () => void,
-    onProgress?: (text: string) => void
-): Promise<string> {
+    onFirstToken: () => void
+): Promise<{ text: string; reasoningSummary?: string }> {
     const messages: Message[] = [
         { role: "system", content: systemPrompt },
         ...history,
@@ -150,11 +239,16 @@ export async function runAgent(
     };
 
     for (let iteration = 0; iteration < 20; iteration++) {
-        const { text, toolCalls } = await streamCompletion(
+        const { text, toolCalls, usage } = await streamCompletion(
             messages,
             config,
             wrappedOnFirstToken
         );
+
+        // Record usage
+        if (usage) {
+            await recordUsage(usage, config.openrouterModel);
+        }
 
         if (toolCalls.length > 0) {
             messages.push({
@@ -182,10 +276,21 @@ export async function runAgent(
             continue;
         }
 
-        return text ?? "(no response)";
+        // No tool calls — final text response
+        const responseText = text ?? "(no response)";
+
+        // Generate reasoning summary if enabled
+        if (config.reasoningSummary && config.enableReasoning) {
+            // Extract reasoning from the last assistant message if available
+            // OpenRouter may include reasoning in the response for non-streaming
+            // For streaming, we'd need to capture it separately
+            // For now, skip summary if we can't get reasoning text
+        }
+
+        return { text: responseText };
     }
 
-    return "(agent loop limit reached)";
+    return { text: "(agent loop limit reached)" };
 }
 
 export type { Message, Config };

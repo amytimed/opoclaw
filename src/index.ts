@@ -6,9 +6,12 @@ import {
     type TextChannel,
     type MessagePayload,
     type MessageReplyOptions,
+    AttachmentBuilder,
 } from "discord.js";
 import { readFileAsync } from "./workspace.ts";
 import { runAgent, type Message as ChatMessage } from "./agent.ts";
+import { getFilePath } from "./workspace.ts";
+import { pendingFileSend, clearPendingFileSend } from "./tools.ts";
 
 import { resolve } from "path";
 const config = await Bun.file(
@@ -41,6 +44,7 @@ async function addReaction(msg: Message, emoji: string): Promise<void> {
     } catch {
     }
 }
+
 async function buildChannelHistory(msg: Message): Promise<ChatMessage[]> {
     const messages = await msg.channel.messages.fetch({ limit: 50 });
     const sorted = Array.from(messages.values()).sort(
@@ -72,9 +76,6 @@ async function buildChannelHistory(msg: Message): Promise<ChatMessage[]> {
 client.on(Events.MessageCreate, async (msg: Message) => {
     // Ignore bots unless allowBots is on, but still respond to direct mentions
     const isBot = msg.author.bot;
-    if (isBot && !config.allowBots && msg.author.id !== client.user!.id) {
-        // Allow mentions through even from bots
-    }
 
     const isMention = msg.mentions.users.has(client.user!.id);
 
@@ -90,7 +91,9 @@ client.on(Events.MessageCreate, async (msg: Message) => {
     // For bots: only respond if mentioned or replied to
     if (isBot && !config.allowBots && !isMention && !isReplyToBot) return;
     if (!isBot && !isMention && !isReplyToBot) return;
+
     await addReaction(msg, EYES);
+
     const [agentsContent, soulContent, identityContent, history] = await Promise.all([
         readFileAsync("AGENTS.md").catch(() => ""),
         readFileAsync("SOUL.md").catch(() => ""),
@@ -120,25 +123,70 @@ client.on(Events.MessageCreate, async (msg: Message) => {
     };
 
     try {
-        const responseText = await runAgent(
+        const { text: responseText } = await runAgent(
             history,
             systemPrompt,
             config,
             onFirstToken
         );
+
+        // Clear previous pending file sends
+        clearPendingFileSend();
+
+        // Split into chunks
         const chunks = splitMessage(responseText);
+        let fileSent = false;
+
         for (let i = 0; i < chunks.length; i++) {
             const content = chunks[i];
             if (!content) continue;
 
             if (i === 0) {
-                await msg.reply(content as string | MessagePayload | MessageReplyOptions);
+                // Attach file to first message if pending
+                if (pendingFileSend && !fileSent) {
+                    try {
+                        const filePath = getFilePath(pendingFileSend.path);
+                        const attachment = new AttachmentBuilder(filePath, {
+                            name: pendingFileSend.path.split("/").pop() || "file",
+                        });
+                        const replyOpts: MessageReplyOptions = {
+                            content: content as string,
+                            files: [attachment],
+                        };
+                        await msg.reply(replyOpts);
+                        fileSent = true;
+                        clearPendingFileSend();
+                    } catch (e: any) {
+                        // File send failed, just send text
+                        await msg.reply(content as string | MessagePayload | MessageReplyOptions);
+                    }
+                } else {
+                    await msg.reply(content as string | MessagePayload | MessageReplyOptions);
+                }
             } else {
                 if ("send" in msg.channel) {
                     await (msg.channel as any).send(content);
                 }
             }
         }
+
+        // Send remaining file if not yet sent (e.g., no text response)
+        if (pendingFileSend && !fileSent) {
+            try {
+                const filePath = getFilePath(pendingFileSend.path);
+                const attachment = new AttachmentBuilder(filePath, {
+                    name: pendingFileSend.path.split("/").pop() || "file",
+                });
+                if ("send" in msg.channel) {
+                    await (msg.channel as any).send({
+                        content: pendingFileSend.caption || "",
+                        files: [attachment],
+                    });
+                }
+            } catch {}
+            clearPendingFileSend();
+        }
+
     } catch (err: any) {
         console.error("Agent error:", err);
         await msg.reply(`⚠️ Error: ${err.message}`).catch(() => { });
