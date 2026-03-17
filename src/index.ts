@@ -58,12 +58,12 @@ async function buildChannelHistory(msg: Message): Promise<ChatMessage[]> {
         if (!text && m.attachments.size === 0) continue;
 
         if (isBot) {
-            // Convert -# prefix on assistant messages to <summary> tags
+            // Convert -# prefix on assistant messages to <think> tags
             if (text.startsWith("-# ")) {
                 const lines = text.split("\n");
                 const summaryLine = lines[0].slice(3); // remove "-# "
                 const rest = lines.slice(1).join("\n").trim();
-                text = rest ? `<summary>${summaryLine}</summary>\n${rest}` : `<summary>${summaryLine}</summary>`;
+                text = rest ? `<think>${summaryLine}</think>\n${rest}` : `<think>${summaryLine}</think>`;
             }
             history.push({ role: "assistant", content: text });
         } else {
