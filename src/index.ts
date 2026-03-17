@@ -131,11 +131,10 @@ client.on(Events.MessageCreate, async (msg: Message) => {
             onFirstToken
         );
 
-        // Prefix reasoning summary if available
+        // Prefix reasoning summary if it's a real summary (not fallback)
         let finalResponse = responseText;
-        if (reasoningSummary) {
-            finalResponse = `-# ${reasoningSummary}
-
+        if (reasoningSummary && !reasoningSummary.includes("no summary") && !reasoningSummary.includes("failed")) {
+            finalResponse = `-${reasoningSummary}
 ${responseText}`;
         }
 

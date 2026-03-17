@@ -150,7 +150,7 @@ async function main() {
   let reasoningSummary = false;
   let reasoningSummaryModel = "";
   if (enableReasoning) {
-    const summaryAns = await ask("Enable reasoning summaries? (y/N): ");
+    const summaryAns = await ask("Enable reasoning summaries? (y/N) [default: N, requires extra API call]: ");
     reasoningSummary = summaryAns.toLowerCase() === "y";
     if (reasoningSummary) {
       const summaryModel = await ask("Summary model (blank = main model): ");
