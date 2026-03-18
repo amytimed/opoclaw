@@ -101,6 +101,7 @@ export interface OpoclawConfig {
     reasoning_summary_model?: string;
     notify_channel?: string;
     basic_tools?: boolean;
+    ollama_semantic_search?: boolean;
 }
 
 export function loadConfig(): OpoclawConfig {
@@ -141,4 +142,8 @@ export function getTools(config: OpoclawConfig): any[] {
     }
 
     return tools;
+}
+
+export function getSemanticSearchEnabled(config: OpoclawConfig): boolean {
+    return config.ollama_semantic_search ?? false;
 }

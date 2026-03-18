@@ -1,4 +1,5 @@
 import { readFileAsync, getFilePath, editFile, listFiles, WORKSPACE_DIR } from "./workspace.ts";
+import { Ollama } from "ollama";
 
 export const TOOLS: { [id: string]: any } = {
     read_file: {
@@ -99,6 +100,136 @@ export const TOOLS: { [id: string]: any } = {
     }
 } as const;
 
+const CACHE_DIR = path.resolve(import.meta.dir, "../cache/embeddings");
+const SIMILARITY_THRESHOLD = 0.65;
+
+function cosineSimilarity(vecA: number[], vecB: number[]): number {
+    const dotProduct = vecA.reduce((sum, a, i) => sum + a * vecB[i]!, 0);
+    const magnitudeA = Math.sqrt(vecA.reduce((sum, a) => sum + a * a, 0));
+    const magnitudeB = Math.sqrt(vecB.reduce((sum, b) => sum + b * b, 0));
+    if (magnitudeA === 0 || magnitudeB === 0) return 0;
+    return dotProduct / (magnitudeA * magnitudeB);
+}
+
+async function hashString(text: string): Promise<string> {
+    const data = new TextEncoder().encode(text);
+    const buf = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(buf))
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+}
+
+interface LineCache {
+    text: string;
+    hash: string;
+    embedding: number[];
+}
+
+interface FileCache {
+    fileHash: string;
+    lines: LineCache[];
+}
+
+async function getOllamaEmbedding(ollama: Ollama, model: string, text: string): Promise<number[]> {
+    const response = await ollama.embed({ model, input: text });
+    return response.embeddings[0]!;
+}
+
+async function getCachedFileEmbeddings(
+    relPath: string,
+    content: string,
+    ollama: Ollama,
+    embedModel: string,
+): Promise<LineCache[]> {
+    // Cache file path: flat, safe name derived from the relative path
+    const safeName = relPath.replace(/[/\\]/g, "__");
+    const cacheFile = path.join(CACHE_DIR, safeName + ".json");
+    const fileHash = await hashString(content);
+
+    let existing: FileCache | null = null;
+    try {
+        const raw = await readFile(cacheFile, "utf-8");
+        existing = JSON.parse(raw) as FileCache;
+    } catch {
+        // not cached yet or unreadable
+    }
+
+    if (existing?.fileHash === fileHash) {
+        return existing.lines;
+    }
+
+    // Build lookup of already-embedded lines by their hash to avoid re-embedding unchanged lines
+    const existingByHash = new Map<string, number[]>();
+    if (existing) {
+        for (const l of existing.lines) {
+            if (l.hash && l.embedding.length) {
+                existingByHash.set(l.hash, l.embedding);
+            }
+        }
+    }
+
+    const rawLines = content.split("\n");
+    const newLines: LineCache[] = [];
+
+    for (const lineText of rawLines) {
+        const trimmed = lineText.trim();
+        if (!trimmed) {
+            newLines.push({ text: lineText, hash: "", embedding: [] });
+            continue;
+        }
+        const lineHash = await hashString(trimmed);
+        const cached = existingByHash.get(lineHash);
+        if (cached) {
+            newLines.push({ text: lineText, hash: lineHash, embedding: cached });
+        } else {
+            const embedding = await getOllamaEmbedding(ollama, embedModel, trimmed);
+            newLines.push({ text: lineText, hash: lineHash, embedding });
+        }
+    }
+
+    const newCache: FileCache = { fileHash, lines: newLines };
+    await mkdir(path.dirname(cacheFile), { recursive: true });
+    await writeFile(cacheFile, JSON.stringify(newCache));
+    return newLines;
+}
+
+async function semanticSearch(query: string, config: OpoclawConfig): Promise<string[]> {
+    const ollamaBaseUrl = config.ollama?.base_url ?? "http://localhost:11434";
+    const embedModel = "nomic-embed-text";
+    const ollama = new Ollama({ host: ollamaBaseUrl });
+
+    // Gather all workspace files
+    const glob = new Bun.Glob("**/*");
+    const files: string[] = [];
+    for await (const f of glob.scan({ cwd: WORKSPACE_DIR, onlyFiles: true })) {
+        files.push(f);
+    }
+
+    const queryEmbedding = await getOllamaEmbedding(ollama, embedModel, query);
+
+    const results: { similarity: number; line: string; file: string }[] = [];
+
+    for (const relPath of files) {
+        let content: string;
+        try {
+            content = await readFile(path.join(WORKSPACE_DIR, relPath), "utf-8");
+        } catch {
+            continue;
+        }
+        const lines = await getCachedFileEmbeddings(relPath, content, ollama, embedModel);
+        for (const l of lines) {
+            if (!l.embedding.length) continue;
+            const sim = cosineSimilarity(queryEmbedding, l.embedding);
+            if (sim >= SIMILARITY_THRESHOLD) {
+                results.push({ similarity: sim, line: l.text, file: relPath });
+            }
+        }
+    }
+
+    results.sort((a, b) => b.similarity - a.similarity);
+    return results.map(r => `[${r.file}] ${r.line.trim()} (score: ${r.similarity.toFixed(3)})`);
+}
+
 // Track pending file sends (picked up by index.ts after tool execution)
 export let pendingFileSend: { path: string; caption: string } | null = null;
 
@@ -111,6 +242,7 @@ const shell = new WasmShell();
 
 import path from "path";
 import { mkdir, readdir, readFile, writeFile, rm, stat as fsStat } from "fs/promises";
+import { getSemanticSearchEnabled, type OpoclawConfig } from "./config.ts";
 const toReal = (rel: string) => path.join(WORKSPACE_DIR, rel);
 
 shell.mount("/home/", {
@@ -138,11 +270,14 @@ shell.mount("/home/", {
 shell.setEnv("HOME", "/home");
 shell.setCwd("/home");
 
+let shellSetUp = false;
+
 const dec = new TextDecoder();
 
 export async function handleToolCall(
     name: string,
-    args: Record<string, string>
+    args: Record<string, string>,
+    config: OpoclawConfig,
 ): Promise<string> {
     console.log(`Handling tool call: ${name} with args ${JSON.stringify(args)}`);
     switch (name) {
@@ -173,6 +308,25 @@ export async function handleToolCall(
             return `File "${args.path}" queued for sending.`;
         }
         case "shell": {
+            if (!shellSetUp) {
+                shellSetUp = true;
+                if (getSemanticSearchEnabled(config)) {
+                    const enc = new TextEncoder();
+                    shell.addProgram('semantic-search', async (ctx) => {
+                        const query = ctx.args.slice(1).join(' ').trim();
+                        if (!query || query === '--help') {
+                            await ctx.writeStderr(enc.encode('Usage: semantic-search <query>\n'));
+                            return 1;
+                        }
+                        const searchResults = await semanticSearch(query, config);
+                        const out = searchResults.length > 0
+                            ? searchResults.join('\n') + '\n'
+                            : '(no results)\n';
+                        await ctx.writeStdout(enc.encode(out));
+                        return 0;
+                    });
+                }
+            }
             if (!args.shell_command) throw new Error("Missing 'shell_command' argument for shell.");
             const result = await shell.exec(args.shell_command);
             let output = "";

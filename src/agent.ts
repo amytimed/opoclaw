@@ -275,7 +275,7 @@ export async function runAgent(
                 let result: string;
                 try {
                     const args = JSON.parse(tc.function.arguments);
-                    result = await handleToolCall(tc.function.name, args);
+                    result = await handleToolCall(tc.function.name, args, config);
                     if (onToolCall) {
                         onToolCall(tc);
                     }

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "discord.js": "^14.25.1",
+    "ollama": "^0.6.3",
     "wasm-shell": "^0.1.1"
   }
 }
