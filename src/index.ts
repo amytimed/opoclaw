@@ -7,6 +7,11 @@ import {
     type MessagePayload,
     type MessageReplyOptions,
     AttachmentBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    EmbedBuilder,
+    ComponentType,
 } from "discord.js";
 import { readFileAsync } from "./workspace.ts";
 import { runAgent, type Message as ChatMessage, type ToolCall } from "./agent.ts";
@@ -27,6 +32,8 @@ const client = new Client({
 const EYES = "👀";
 const THINKING = "🤔";
 const TOOL = "🔧";
+const APPROVAL_TOOLS = new Set(["edit_config", "restart_gateway"]);
+const APPROVAL_TIMEOUT_MS = 60_000;
 
 async function removeReaction(msg: Message, emoji: string): Promise<void> {
     try {
@@ -131,6 +138,9 @@ client.on(Events.MessageCreate, async (msg: Message) => {
     };
     const toolMessages: { [id: string]: Message } = {};
     const onToolCall = async (call: ToolCall, uniqueId: string) => {
+        if (APPROVAL_TOOLS.has(call.function.name)) {
+            return;
+        }
         if (!gotToolCall) {
             await addReaction(msg, TOOL);
             gotToolCall = true;
@@ -166,6 +176,70 @@ client.on(Events.MessageCreate, async (msg: Message) => {
         }
     };
 
+    const requestToolApproval = async (call: ToolCall, uniqueId: string) => {
+        if (!APPROVAL_TOOLS.has(call.function.name)) {
+            return { approved: true };
+        }
+
+        const channel = msg.channel as TextChannel;
+        const notice = await channel.send("-# Requesting permission...");
+
+        let argsPreview = "(no args)";
+        try {
+            const args = JSON.parse(call.function.arguments || "{}");
+            if (call.function.name === "edit_config") {
+                const key = typeof args.key === "string" ? args.key : "(missing)";
+                const value = typeof args.value === "string" ? args.value : String(args.value ?? "(missing)");
+                argsPreview = `key: ${key}\nvalue: ${value.length > 200 ? value.slice(0, 200) + "…" : value}`;
+            } else if (Object.keys(args).length > 0) {
+                const raw = JSON.stringify(args);
+                argsPreview = raw.length > 500 ? raw.slice(0, 500) + "…" : raw;
+            }
+        } catch {
+        }
+
+        const embed = new EmbedBuilder()
+            .setTitle("Authorize Tool Call")
+            .setDescription(`Tool: \`${call.function.name}\`\nArgs: ${argsPreview}`)
+            .setColor(0x242429);
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder().setCustomId(`approve:${uniqueId}:yes`).setLabel("Yes").setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId(`approve:${uniqueId}:no`).setLabel("No").setStyle(ButtonStyle.Danger),
+        );
+
+        const prompt = await channel.send({ embeds: [embed], components: [row] });
+
+        let approved = false;
+        try {
+            const interaction = await prompt.awaitMessageComponent({
+                componentType: ComponentType.Button,
+                time: APPROVAL_TIMEOUT_MS,
+                filter: (i) => i.user.id === msg.author.id,
+            });
+            approved = interaction.customId.endsWith(":yes");
+            await interaction.deferUpdate();
+        } catch {
+            approved = false;
+        }
+
+        const finalEmbed = EmbedBuilder.from(embed)
+            .setColor(0x242429)
+            .setFooter({ text: approved ? "Approved" : "Denied or timed out" });
+
+        await prompt.edit({ embeds: [finalEmbed], components: [] });
+        await notice.edit(`-# Permission ${approved ? "granted" : "denied"}.`);
+
+        if (!approved) {
+            return {
+                approved: false,
+                message: "Not authorized to make this decision.",
+            };
+        }
+
+        return { approved: true };
+    };
+
     try {
         const { text: responseText, reasoningSummary } = await runAgent(
             history,
@@ -174,6 +248,7 @@ client.on(Events.MessageCreate, async (msg: Message) => {
             onFirstToken,
             onToolCall,
             onToolCallError,
+            requestToolApproval,
         );
 
         // Prefix reasoning summary if it's a real summary (not fallback)
@@ -187,9 +262,6 @@ client.on(Events.MessageCreate, async (msg: Message) => {
             finalResponse = `-# ${reasoningSummary}
 ${responseText}`;
         }
-
-        // Clear previous pending file sends
-        clearPendingFileSend();
 
         // Split into chunks
         const chunks = splitMessage(finalResponse);

@@ -237,7 +237,8 @@ export async function runAgent(
     config: OpoclawConfig,
     onFirstToken: () => void,
     onToolCall: (call: ToolCall, uniqueId: string) => void,
-    onToolCallError: (uniqueId: string, error: Error) => void
+    onToolCallError: (uniqueId: string, error: Error) => void,
+    requestToolApproval?: (call: ToolCall, uniqueId: string) => Promise<{ approved: boolean; message?: string }>
 ): Promise<{ text: string; reasoningSummary?: string; ranTools?: boolean }> {
     const messages: Message[] = [
         { role: "system", content: systemPrompt },
@@ -280,12 +281,26 @@ export async function runAgent(
                     if (onToolCall) {
                         onToolCall(tc, uniqueId);
                     }
-                    result = await handleToolCall(tc.function.name, args, config).catch((e) => {
-                        if (onToolCallError) {
-                            onToolCallError(uniqueId, e);
+                    if (requestToolApproval) {
+                        const approval = await requestToolApproval(tc, uniqueId);
+                        if (!approval.approved) {
+                            result = approval.message || "Not authorized to perform this action.";
+                        } else {
+                            result = await handleToolCall(tc.function.name, args, config).catch((e) => {
+                                if (onToolCallError) {
+                                    onToolCallError(uniqueId, e);
+                                }
+                                return `Error: ${e.toString()}`;
+                            });
                         }
-                        return `Error: ${e.toString()}`;
-                    });
+                    } else {
+                        result = await handleToolCall(tc.function.name, args, config).catch((e) => {
+                            if (onToolCallError) {
+                                onToolCallError(uniqueId, e);
+                            }
+                            return `Error: ${e.toString()}`;
+                        });
+                    }
                 } catch (e: any) {
                     if (onToolCallError) {
                         onToolCallError(uniqueId, e);

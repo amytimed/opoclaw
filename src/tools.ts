@@ -76,6 +76,63 @@ export const TOOLS: { [id: string]: any } = {
             },
         },
     },
+    edit_config: {
+        type: "function",
+        function: {
+            name: "edit_config",
+            description:
+                "Update a single key in config.toml at the project root. This is restricted and requires user approval.",
+            parameters: {
+                type: "object",
+                properties: {
+                    key: {
+                        type: "string",
+                        description: "Config key to update. Use dot notation for sections (e.g. 'ollama.base_url').",
+                    },
+                    value: {
+                        type: "string",
+                        description: "New value for the key.",
+                    },
+                },
+                required: ["key", "value"],
+            },
+        },
+    },
+    restart_gateway: {
+        type: "function",
+        function: {
+            name: "restart_gateway",
+            description:
+                "Restart the opoclaw gateway. This is restricted and requires user approval.",
+            parameters: {
+                type: "object",
+                properties: {},
+                required: [],
+            },
+        },
+    },
+    search: {
+        type: "function",
+        function: {
+            name: "search",
+            description:
+                "Search the web using DuckDuckGo (no API key required) and return top results.",
+            parameters: {
+                type: "object",
+                properties: {
+                    query: {
+                        type: "string",
+                        description: "Search query.",
+                    },
+                    count: {
+                        type: "number",
+                        description: "Max results to return (1-10). Defaults to 5.",
+                    },
+                },
+                required: ["query"],
+            },
+        },
+    },
     shell: {
         type: "function",
         function: {
@@ -242,7 +299,7 @@ const shell = new WasmShell();
 
 import path from "path";
 import { mkdir, readdir, readFile, writeFile, rm, stat as fsStat } from "fs/promises";
-import { getSemanticSearchEnabled, type OpoclawConfig } from "./config.ts";
+import { getConfigPath, getSemanticSearchEnabled, parseTOML, toTOML, type OpoclawConfig } from "./config.ts";
 const toReal = (rel: string) => path.join(WORKSPACE_DIR, rel);
 
 shell.mount("/home/", {
@@ -273,6 +330,81 @@ shell.setCwd("/home");
 let shellSetUp = false;
 
 const dec = new TextDecoder();
+
+function decodeHtmlEntities(input: string): string {
+    return input
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&nbsp;/g, " ");
+}
+
+function stripHtml(input: string): string {
+    return input.replace(/<[^>]*>/g, "").trim();
+}
+
+async function duckDuckGoSearch(query: string, count = 5): Promise<string> {
+    const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}&kl=us-en`;
+    const res = await fetch(url, { headers: { "User-Agent": "opoclaw-bot/1.0" } });
+    if (!res.ok) {
+        throw new Error(`DuckDuckGo search failed (${res.status})`);
+    }
+    const html = await res.text();
+    const results: Array<{ title: string; url: string; snippet: string }> = [];
+
+    const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<(?:a|div|span)[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/(?:a|div|span)>/g;
+    let match: RegExpExecArray | null;
+    while ((match = resultRegex.exec(html)) && results.length < count) {
+        const url = decodeHtmlEntities(match[1] || "");
+        const title = decodeHtmlEntities(stripHtml(match[2] || ""));
+        const snippet = decodeHtmlEntities(stripHtml(match[3] || ""));
+        if (title && url) {
+            results.push({ title, url, snippet });
+        }
+    }
+
+    if (results.length === 0) {
+        return "(no results)";
+    }
+
+    return results
+        .map((r, i) => `${i + 1}. ${r.title}\n${r.url}\n${r.snippet}`)
+        .join("\n\n");
+}
+
+function setNestedValue(obj: Record<string, any>, keyPath: string, value: any): void {
+    const parts = keyPath.split(".").map((p) => p.trim()).filter(Boolean);
+    if (parts.length === 0) {
+        throw new Error("Invalid key path.");
+    }
+    let cur: Record<string, any> = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+        const part = parts[i]!;
+        if (typeof cur[part] !== "object" || cur[part] === null || Array.isArray(cur[part])) {
+            cur[part] = {};
+        }
+        cur = cur[part] as Record<string, any>;
+    }
+    cur[parts[parts.length - 1]!] = value;
+}
+
+function coerceConfigValue(raw: string): any {
+    const trimmed = raw.trim();
+    if (
+        (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+        (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+        return trimmed.slice(1, -1);
+    }
+    if (trimmed === "true") return true;
+    if (trimmed === "false") return false;
+    if (trimmed === "null") return null;
+    if (/^-?\d+$/.test(trimmed)) return parseInt(trimmed, 10);
+    if (/^-?\d+\.\d+$/.test(trimmed)) return parseFloat(trimmed);
+    return raw;
+}
 
 export async function handleToolCall(
     name: string,
@@ -306,6 +438,38 @@ export async function handleToolCall(
             // Queue file for sending after response
             pendingFileSend = { path: args.path, caption: args.caption || "" };
             return `File "${args.path}" queued for sending.`;
+        }
+        case "edit_config": {
+            if (!args.key) throw new Error("Missing 'key' argument for edit_config.");
+            if (args.value === undefined) throw new Error("Missing 'value' argument for edit_config.");
+            const configPath = getConfigPath();
+            const raw = await readFile(configPath, "utf-8");
+            const parsed = parseTOML(raw);
+            const nextValue = coerceConfigValue(String(args.value));
+            setNestedValue(parsed, String(args.key), nextValue);
+            const next = toTOML(parsed);
+            await writeFile(configPath, next, "utf-8");
+            return `Updated config key "${args.key}".`;
+        }
+        case "restart_gateway": {
+            const cmd = ["bash", "-lc", "sleep 1; bun run src/cli.ts gateway restart"];
+            const proc = Bun.spawn({
+                cmd,
+                cwd: path.resolve(import.meta.dir, ".."),
+                stdout: "ignore",
+                stderr: "ignore",
+                detached: true,
+            });
+            if (typeof (proc as any).unref === "function") {
+                (proc as any).unref();
+            }
+            return "Gateway restart initiated.";
+        }
+        case "search": {
+            if (!args.query) throw new Error("Missing 'query' argument for search.");
+            const countRaw = Number(args.count ?? 5);
+            const count = Number.isFinite(countRaw) ? Math.min(Math.max(1, countRaw), 10) : 5;
+            return await duckDuckGoSearch(String(args.query), count);
         }
         case "shell": {
             if (!shellSetUp) {

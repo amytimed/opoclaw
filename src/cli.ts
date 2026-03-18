@@ -226,7 +226,25 @@ async function gatewayStart() {
   }, 2000);
 }
 
-function gatewayStop() {
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (!isProcessAlive(pid)) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return !isProcessAlive(pid);
+}
+
+async function gatewayStop() {
   const pid = getGatewayPID();
   if (!pid) {
     warn("Gateway not running");
@@ -235,18 +253,39 @@ function gatewayStop() {
 
   info(`Stopping gateway (PID ${pid})...`);
   try {
-    process.kill(pid, "SIGTERM");
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      process.kill(pid, "SIGTERM");
+    }
+
+    const stopped = await waitForExit(pid, 4000);
+    if (!stopped) {
+      warn("Gateway did not exit after SIGTERM, sending SIGKILL...");
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        process.kill(pid, "SIGKILL");
+      }
+      await waitForExit(pid, 2000);
+    }
+
+    if (isProcessAlive(pid)) {
+      warn("Gateway process still alive after SIGKILL.");
+    } else {
+      ok("Gateway stopped");
+    }
     clearGatewayPID();
-    ok("Gateway stopped");
   } catch (e: any) {
     err(`Failed to stop: ${e.message}`);
     clearGatewayPID();
   }
 }
 
-function gatewayRestart() {
-  gatewayStop();
-  setTimeout(() => gatewayStart(), 500);
+async function gatewayRestart() {
+  await gatewayStop();
+  await new Promise((r) => setTimeout(r, 500));
+  await gatewayStart();
 }
 
 function gatewayStatus() {
@@ -507,9 +546,9 @@ async function main() {
     case "gateway":
       const sub = args[1];
       switch (sub) {
-        case "start":   gatewayStart(); break;
-        case "stop":    gatewayStop(); break;
-        case "restart": gatewayRestart(); break;
+        case "start":   await gatewayStart(); break;
+        case "stop":    await gatewayStop(); break;
+        case "restart": await gatewayRestart(); break;
         case "status":  gatewayStatus(); break;
         default:
           console.log("Usage: opoclaw gateway {start|stop|restart|status}");
