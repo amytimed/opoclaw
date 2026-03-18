@@ -84,12 +84,16 @@ export const TOOLS: { [id: string]: any } = {
             parameters: {
                 type: "object",
                 properties: {
-                    command: {
+                    description: {
+                        type: "string",
+                        description: "User-facing description of what you're doing. Like: \"Searching through memory files\", \"Writing to MEMORY.md\", and so on. Don't add an elipsis at the end. Keep this concise.",
+                    },
+                    shell_command: {
                         type: "string",
                         description: "The shell command to run.",
                     },
                 },
-                required: ["command"],
+                required: ["description", "shell_command"],
             },
         },
     }
@@ -134,10 +138,13 @@ shell.mount("/home/", {
 shell.setEnv("HOME", "/home");
 shell.setCwd("/home");
 
+const dec = new TextDecoder();
+
 export async function handleToolCall(
     name: string,
     args: Record<string, string>
 ): Promise<string> {
+    console.log(`Handling tool call: ${name} with args ${JSON.stringify(args)}`);
     switch (name) {
         case "read_file": {
             if (!args.path) throw new Error("Missing 'path' argument for read_file.");
@@ -166,11 +173,12 @@ export async function handleToolCall(
             return `File "${args.path}" queued for sending.`;
         }
         case "shell": {
-            if (!args.command) throw new Error("Missing 'command' argument for shell.");
-            const result = await shell.exec(args.command);
+            if (!args.shell_command) throw new Error("Missing 'shell_command' argument for shell.");
+            const result = await shell.exec(args.shell_command);
             let output = "";
-            if (result.stdout) output += `stdout:\n\`\`\`${result.stdout}\`\`\`\n`;
-            if (result.stderr) output += `stderr:\n\`\`\`${result.stderr}\`\`\`\n`;
+            
+            if (result.stdout) output += `stdout:\n\`\`\`${dec.decode(result.stdout).trim()}\`\`\`\n`;
+            if (result.stderr) output += `stderr:\n\`\`\`${dec.decode(result.stderr).trim()}\`\`\`\n`;
             if (output.length === 0) output = "(no shell output)";
             if (result.code !== 0) output = `Command exited with code ${result.code}.\n` + output;
             const home = shell.getEnv("HOME") ?? "/home";

@@ -6,3 +6,4 @@ workspace/config.toml
 config.json.bak
 config.toml
 usage.json
+workspace/

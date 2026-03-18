@@ -9,7 +9,7 @@ interface Message {
     name?: string;
 }
 
-interface ToolCall {
+export interface ToolCall {
     id: string;
     type: "function";
     function: {
@@ -235,8 +235,9 @@ export async function runAgent(
     history: Message[],
     systemPrompt: string,
     config: OpoclawConfig,
-    onFirstToken: () => void
-): Promise<{ text: string; reasoningSummary?: string }> {
+    onFirstToken: () => void,
+    onToolCall: (call: ToolCall) => void
+): Promise<{ text: string; reasoningSummary?: string; ranTools?: boolean }> {
     const messages: Message[] = [
         { role: "system", content: systemPrompt },
         ...history,
@@ -275,6 +276,9 @@ export async function runAgent(
                 try {
                     const args = JSON.parse(tc.function.arguments);
                     result = await handleToolCall(tc.function.name, args);
+                    if (onToolCall) {
+                        onToolCall(tc);
+                    }
                 } catch (e: any) {
                     result = `Error: ${e.message}`;
                 }
@@ -301,7 +305,7 @@ export async function runAgent(
             );
         }
 
-        return { text: responseText, reasoningSummary: reasoningSummaryText };
+        return { text: responseText, reasoningSummary: reasoningSummaryText, ranTools: toolCalls.length > 0 };
     }
 
     return { text: "(agent loop limit reached)" };
