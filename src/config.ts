@@ -135,7 +135,14 @@ export function getModelId(config: OpoclawConfig): string {
 }
 
 export function getTools(config: OpoclawConfig): any[] {
-    const tools = [TOOLS.send_file, TOOLS.search, TOOLS.edit_config, TOOLS.restart_gateway, TOOLS.shell];
+    const tools = [
+        TOOLS.send_file,
+        TOOLS.search,
+        TOOLS.edit_config,
+        TOOLS.restart_gateway,
+        TOOLS.update_opoclaw,
+        TOOLS.shell,
+    ];
 
     if (config.basic_tools ?? true) {
         tools.push(TOOLS.read_file, TOOLS.edit_file, TOOLS.list_files);

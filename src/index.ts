@@ -13,6 +13,7 @@ import {
     EmbedBuilder,
     ComponentType,
 } from "discord.js";
+import { resolve } from "path";
 import { readFileAsync } from "./workspace.ts";
 import { runAgent, type Message as ChatMessage, type ToolCall } from "./agent.ts";
 import { getFilePath } from "./workspace.ts";
@@ -32,8 +33,50 @@ const client = new Client({
 const EYES = "👀";
 const THINKING = "🤔";
 const TOOL = "🔧";
-const APPROVAL_TOOLS = new Set(["edit_config", "restart_gateway"]);
+const APPROVAL_TOOLS = new Set(["edit_config", "restart_gateway", "update_opoclaw"]);
 const APPROVAL_TIMEOUT_MS = 60_000;
+const UPDATE_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+const OP_DIR = resolve(import.meta.dir, "..");
+const dec = new TextDecoder();
+let lastUpdateCheck = 0;
+let cachedUpdateTag: string | null = null;
+
+function runGit(cmd: string): string | null {
+    try {
+        const p = Bun.spawnSync({
+            cmd: ["bash", "-lc", cmd],
+            cwd: OP_DIR,
+            stdout: "pipe",
+            stderr: "pipe",
+        });
+        if (p.exitCode !== 0) return null;
+        return dec.decode(p.stdout).trim();
+    } catch {
+        return null;
+    }
+}
+
+async function getUpdateTag(): Promise<string | null> {
+    const now = Date.now();
+    if (now - lastUpdateCheck < UPDATE_CHECK_INTERVAL_MS) {
+        return cachedUpdateTag;
+    }
+    lastUpdateCheck = now;
+
+    const currentTag = runGit("git describe --tags --abbrev=0 2>/dev/null || echo ''");
+    if (!currentTag) {
+        cachedUpdateTag = null;
+        return null;
+    }
+    runGit("git fetch --tags 2>/dev/null || true");
+    const latestTag = runGit("git tag --sort=-v:refname | head -1");
+    if (latestTag && latestTag !== currentTag) {
+        cachedUpdateTag = latestTag;
+        return latestTag;
+    }
+    cachedUpdateTag = null;
+    return null;
+}
 
 async function removeReaction(msg: Message, emoji: string): Promise<void> {
     try {
@@ -261,6 +304,11 @@ client.on(Events.MessageCreate, async (msg: Message) => {
             !reasoningSummary.startsWith("The assistant")) {
             finalResponse = `-# ${reasoningSummary}
 ${responseText}`;
+        }
+
+        const updateTag = await getUpdateTag();
+        if (updateTag) {
+            finalResponse += `\n-# ⚠️ An update is available (${updateTag}). Run \`opoclaw update\` to update, or ask your agent to perform the update.`;
         }
 
         // Split into chunks

@@ -111,6 +111,19 @@ export const TOOLS: { [id: string]: any } = {
             },
         },
     },
+    update_opoclaw: {
+        type: "function",
+        function: {
+            name: "update_opoclaw",
+            description:
+                "Update opoclaw to the latest version. This is restricted and requires user approval.",
+            parameters: {
+                type: "object",
+                properties: {},
+                required: [],
+            },
+        },
+    },
     search: {
         type: "function",
         function: {
@@ -464,6 +477,20 @@ export async function handleToolCall(
                 (proc as any).unref();
             }
             return "Gateway restart initiated.";
+        }
+        case "update_opoclaw": {
+            const cmd = ["bash", "-lc", "sleep 1; bun run src/cli.ts update"];
+            const proc = Bun.spawn({
+                cmd,
+                cwd: path.resolve(import.meta.dir, ".."),
+                stdout: "ignore",
+                stderr: "ignore",
+                detached: true,
+            });
+            if (typeof (proc as any).unref === "function") {
+                (proc as any).unref();
+            }
+            return "Update initiated.";
         }
         case "search": {
             if (!args.query) throw new Error("Missing 'query' argument for search.");
