@@ -1,5 +1,8 @@
 import { handleToolCall } from "./tools.ts";
 import { getApiBaseUrl, getApiKey, getModelId, getTools, type OpoclawConfig } from "./config.ts";
+import { dirname } from "path";
+import { mkdir } from "fs/promises";
+import { fileURLToPath } from "url";
 
 interface Message {
     role: "system" | "user" | "assistant" | "tool";
@@ -31,7 +34,7 @@ interface UsageStats {
     }>;
 }
 
-const USAGE_FILE = new URL("../usage.json", import.meta.url).pathname;
+const USAGE_FILE = fileURLToPath(new URL("../usage.json", import.meta.url));
 
 function isAnthropicCustom(config: OpoclawConfig): boolean {
     return config.provider === "custom" && config.custom?.api_type === "anthropic";
@@ -110,6 +113,7 @@ async function loadUsage(): Promise<UsageStats> {
 }
 
 async function saveUsage(stats: UsageStats): Promise<void> {
+    await mkdir(dirname(USAGE_FILE), { recursive: true });
     await Bun.write(USAGE_FILE, JSON.stringify(stats, null, 2));
 }
 
