@@ -18,6 +18,7 @@ const USAGE_FILE = resolve(OP_DIR, "usage.json");
 const WORKSPACE_DIR = resolve(OP_DIR, "workspace");
 const BIN_DIR = `${homedir()}/.local/bin`;
 const OPCLAW_BIN = `${BIN_DIR}/opoclaw`;
+const OPCLAW_BIN_WIN = `${BIN_DIR}/opoclaw.cmd`;
 const LOCK_FILE = resolve(OP_DIR, ".gateway.lock");
 const HIBERNATE_FILE = resolve(OP_DIR, ".gateway.hibernate");
 
@@ -470,6 +471,7 @@ function uninstall() {
   uninstallService();
   // Remove symlink
   try { unlinkSync(OPCLAW_BIN); } catch {}
+  try { unlinkSync(OPCLAW_BIN_WIN); } catch {}
   ok("opoclaw uninstalled.");
   console.log(`\n  To remove all data, delete: ${OP_DIR}`);
   console.log(`  (config.toml, workspace, and usage data will be lost)\n`);
@@ -481,20 +483,28 @@ function installCommand() {
   info("Installing opoclaw command...");
   mkdirSync(BIN_DIR, { recursive: true });
 
-  // Create wrapper script
-  const wrapper = `#!/bin/bash
-bun run "${resolve(import.meta.dir, "cli.ts")}" "$@"
-`;
-  writeFileSync(OPCLAW_BIN, wrapper);
-  exec(`chmod +x ${OPCLAW_BIN}`);
-  ok(`opoclaw command installed to ${OPCLAW_BIN}`);
+  if (getOS() === "windows") {
+    const wrapper = `@echo off\r\nbun run \"${resolve(import.meta.dir, "cli.ts")}\" %*\r\n`;
+    writeFileSync(OPCLAW_BIN_WIN, wrapper);
+    ok(`opoclaw command installed to ${OPCLAW_BIN_WIN}`);
+  } else {
+    // Create wrapper script
+    const wrapper = `#!/bin/bash\nbun run \"${resolve(import.meta.dir, "cli.ts")}\" \"$@\"\n`;
+    writeFileSync(OPCLAW_BIN, wrapper);
+    exec(`chmod +x ${OPCLAW_BIN}`);
+    ok(`opoclaw command installed to ${OPCLAW_BIN}`);
+  }
 
   // Check PATH
   const path = process.env.PATH || "";
   if (!path.includes(BIN_DIR)) {
     warn(`${BIN_DIR} is not in your PATH.`);
-    console.log(`  Add to .zshrc / .bashrc:`);
-    console.log(`  export PATH="${BIN_DIR}:$PATH"`);
+    if (getOS() === "windows") {
+      console.log(`  Add ${BIN_DIR} to your PATH environment variable.`);
+    } else {
+      console.log(`  Add to .zshrc / .bashrc:`);
+      console.log(`  export PATH="${BIN_DIR}:$PATH"`);
+    }
   }
 
   // Install auto-start service
