@@ -175,13 +175,27 @@ async function main() {
 
     let ollamaBaseURL = "", ollamaModel = "";
     let customBaseURL = "", customAPIKey = "", customModel = "";
+    let customApiType = "openai";
+    let customAnthropicVersion = "";
+    let customMaxTokens = "";
     if (provider === "ollama") {
         ollamaBaseURL = await ask("Ollama base URL [http://localhost:11434]: ") || "http://localhost:11434";
         ollamaModel = await ask("Ollama model [llama3.2]: ") || "llama3.2";
     } else if (provider === "custom") {
-        customBaseURL = await ask("Base URL (no /v1/chat/completions): ");
-        customAPIKey = await ask("API key (blank if none): ");
-        customModel = await ask("Model name: ");
+        const apiTypeAns = await ask("Custom API type [openai/anthropic] (openai): ");
+        const apiType = apiTypeAns.toLowerCase();
+        customApiType = apiType === "anthropic" ? "anthropic" : "openai";
+        if (customApiType === "anthropic") {
+            customBaseURL = await ask("Anthropic base URL [https://api.anthropic.com]: ") || "https://api.anthropic.com";
+            customAPIKey = await ask("Anthropic API key (sk-ant-...): ");
+            customModel = await ask("Anthropic model name (e.g. claude-3-5-sonnet-20240620): ");
+            customAnthropicVersion = await ask("Anthropic version [2023-06-01]: ") || "2023-06-01";
+            customMaxTokens = await ask("Max output tokens [1024]: ") || "1024";
+        } else {
+            customBaseURL = await ask("Base URL (no /v1/chat/completions): ");
+            customAPIKey = await ask("API key (blank if none): ");
+            customModel = await ask("Model name: ");
+        }
     }
 
     // ── Model ──────────────────────────────────────────────────────────────
@@ -252,6 +266,15 @@ async function main() {
         toml += 'base_url = "' + customBaseURL + '"\n';
         toml += 'api_key = "' + customAPIKey + '"\n';
         toml += 'model = "' + customModel + '"\n';
+        toml += 'api_type = "' + customApiType + '"\n';
+        if (customApiType === "anthropic") {
+            if (customAnthropicVersion) {
+                toml += 'anthropic_version = "' + customAnthropicVersion + '"\n';
+            }
+            if (customMaxTokens) {
+                toml += 'max_tokens = ' + customMaxTokens + '\n';
+            }
+        }
     }
 
     writeFileSync(CONFIG_FILE, toml);

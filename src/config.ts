@@ -94,7 +94,14 @@ export interface OpoclawConfig {
     openrouter_model: string;
     provider?: "openrouter" | "ollama" | "custom";
     ollama?: { base_url?: string; model?: string };
-    custom?: { base_url?: string; api_key?: string; model?: string };
+    custom?: {
+        base_url?: string;
+        api_key?: string;
+        model?: string;
+        api_type?: "openai" | "anthropic";
+        anthropic_version?: string;
+        max_tokens?: number;
+    };
     allow_bots?: boolean;
     enable_reasoning?: boolean;
     reasoning_summary?: boolean;
