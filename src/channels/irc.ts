@@ -5,6 +5,7 @@ import { readFile as readFileFs } from "fs/promises";
 import { runAgent, type Message as ChatMessage } from "../agent.ts";
 import { getSemanticSearchEnabled, loadConfig, useTomlFiles } from "../config.ts";
 import { readFileAsync } from "../workspace.ts";
+import { listSkills } from "../skills.ts";
 
 const SYSTEM_PROMPT_FILE = resolve(import.meta.dir, "../SYSTEM.md");
 
@@ -124,12 +125,13 @@ export async function startIRC(): Promise<void> {
             const history = historyByTarget.get(key) || [];
 
             const useToml = useTomlFiles(config);
-            const [systemBase, agentsContent, soulContent, identityContent, memoryContent] = await Promise.all([
+            const [systemBase, agentsContent, soulContent, identityContent, memoryContent, skills] = await Promise.all([
                 loadSystemPromptBase(),
                 readFileAsync(useToml ? "agents.toml" : "AGENTS.md").catch(() => ""),
                 readFileAsync(useToml ? "soul.toml" : "SOUL.md").catch(() => ""),
                 readFileAsync(useToml ? "identity.toml" : "IDENTITY.md").catch(() => ""),
                 readFileAsync(useToml ? "memory.toml" : "MEMORY.md").catch(() => ""),
+                listSkills(),
             ]);
 
             const systemPromptParts: string[] = [];
@@ -155,6 +157,11 @@ export async function startIRC(): Promise<void> {
             if (getSemanticSearchEnabled(config)) {
                 systemPromptParts.push(
                     "\n## Semantic Search\nYou have access to a semantic search command in your shell. Use `semantic-search <query>` and it'll return lines in any file that match embeddings. You don't need to worry about gaming this, remember it's semantic and not keyword based, so even just a description of what you're looking for can work. The command caches efficiently as well.\nThis is the recommended way to search through your memory. You can do multiple searches at once using normal shell syntax like semicolons: `semantic-search <query1>; semantic-search <query2>`",
+                );
+            }
+            if (skills.length > 0) {
+                systemPromptParts.push(
+                    `\n## Skills\nAvailable skills: ${skills.map((s) => `\`${s}\``).join(", ")}\nTo use a skill, call the use_skill tool with the skill name. It will return the skill's SKILL.md instructions before you apply them.`,
                 );
             }
             if (useToml) {

@@ -159,6 +159,36 @@ export const TOOLS: { [id: string]: any } = {
             },
         },
     },
+    use_skill: {
+        type: "function",
+        function: {
+            name: "use_skill",
+            description:
+                "Load a skill by name from workspace/skills/<skill>/SKILL.md. Use this before applying a skill's instructions.",
+            parameters: {
+                type: "object",
+                properties: {
+                    name: {
+                        type: "string",
+                        description: "Skill folder name under workspace/skills.",
+                    },
+                },
+                required: ["name"],
+            },
+        },
+    },
+    list_skills: {
+        type: "function",
+        function: {
+            name: "list_skills",
+            description: "List available skills from workspace/skills.",
+            parameters: {
+                type: "object",
+                properties: {},
+                required: [],
+            },
+        },
+    },
     shell: {
         type: "function",
         function: {
@@ -326,6 +356,7 @@ const shell = new WasmShell();
 import path from "path";
 import { mkdir, readdir, readFile, writeFile, rm, stat as fsStat } from "fs/promises";
 import { getConfigPath, getExposedCommands, getSemanticSearchEnabled, parseTOML, toTOML, type OpoclawConfig } from "./config.ts";
+import { listSkills, readSkill } from "./skills.ts";
 const toReal = (rel: string) => path.join(WORKSPACE_DIR, rel);
 
 shell.mount("/home/", {
@@ -519,6 +550,14 @@ export async function handleToolCall(
             const countRaw = Number(args.count ?? 5);
             const count = Number.isFinite(countRaw) ? Math.min(Math.max(1, countRaw), 10) : 5;
             return await duckDuckGoSearch(String(args.query), count);
+        }
+        case "use_skill": {
+            if (!args.name) throw new Error("Missing 'name' argument for use_skill.");
+            return await readSkill(String(args.name));
+        }
+        case "list_skills": {
+            const skills = await listSkills();
+            return skills.length > 0 ? skills.join("\n") : "(no skills)";
         }
         case "shell": {
             if (!shellSetUp) {

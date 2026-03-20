@@ -195,6 +195,8 @@ export function getTools(config: OpoclawConfig): any[] {
         TOOLS.restart_gateway,
         TOOLS.hibernate_gateway,
         TOOLS.update_opoclaw,
+        TOOLS.use_skill,
+        TOOLS.list_skills,
         TOOLS.shell,
     ];
 

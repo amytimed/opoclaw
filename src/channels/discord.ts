@@ -21,6 +21,7 @@ import { getFilePath } from "../workspace.ts";
 import { pendingFileSend, clearPendingFileSend } from "../tools.ts";
 
 import { getSemanticSearchEnabled, loadConfig, useTomlFiles } from "../config.ts";
+import { listSkills } from "../skills.ts";
 
 const client = new Client({
     intents: [
@@ -295,13 +296,14 @@ client.on(Events.MessageCreate, async (msg: Message) => {
 
     const useToml = useTomlFiles(config);
 
-    const [systemBase, agentsContent, soulContent, identityContent, memoryContent, history] = await Promise.all([
+    const [systemBase, agentsContent, soulContent, identityContent, memoryContent, history, skills] = await Promise.all([
         loadSystemPromptBase(),
         readFileAsync(useToml ? 'agents.toml' : 'AGENTS.md').catch(() => ""),
         readFileAsync(useToml ? 'soul.toml' : 'SOUL.md').catch(() => ""),
         readFileAsync(useToml ? 'identity.toml' : 'IDENTITY.md').catch(() => ""),
         readFileAsync(useToml ? 'memory.toml' : 'MEMORY.md').catch(() => ""),
         buildChannelHistory(msg),
+        listSkills(),
     ]);
 
     const systemPromptParts: string[] = [];
@@ -312,6 +314,11 @@ client.on(Events.MessageCreate, async (msg: Message) => {
     if (memoryContent) systemPromptParts.push("\n## Memory\nThis is your " + (useToml ? "memory.toml" : "MEMORY.md") + ". You can edit that file, but be careful not to accidentally erase information in it.\n```\n" + memoryContent + "\n```");
     if (getSemanticSearchEnabled(config)) {
         systemPromptParts.push("\n## Semantic Search\nYou have access to a semantic search command in your shell. Use `semantic-search <query>` and it'll return lines in any file that match embeddings. You don't need to worry about gaming this, remember it's semantic and not keyword based, so even just a description of what you're looking for can work. The command caches efficiently as well.\nThis is the recommended way to search through your memory. You can do multiple searches at once using normal shell syntax like semicolons: `semantic-search <query1>; semantic-search <query2>`");
+    }
+    if (skills.length > 0) {
+        systemPromptParts.push(
+            `\n## Skills\nAvailable skills: ${skills.map((s) => `\`${s}\``).join(", ")}\nTo use a skill, call the use_skill tool with the skill name. It will return the skill's SKILL.md instructions before you apply them.`
+        );
     }
     if (useToml) {
         systemPromptParts.push("\n## TOML Editing\nIn your shell, you have a convenient CLI for easy editing. You can use `toml <file> <key> push <value>` to push a value to a key, or `toml <file> <key> remove <value>` to remove a value. If the key or file doesn't exist, it will be created for you.\nThis is the primary way you should be managing memory. You can for example use `toml memory.toml notes push \"<something you want to remember>\"` to add a note to your memory, which will persist across sessions.");
@@ -346,9 +353,14 @@ client.on(Events.MessageCreate, async (msg: Message) => {
         let fullText = '-# 🔧  Called `' + call.function.name + '`';
         try {
             const args = JSON.parse(call.function.arguments);
-            const argEntries = Object.entries(args);
-            if (argEntries.length === 1) {
-                fullText += ` with \`${argEntries[0]![1]}\``;
+            if (call.function.name === "use_skill" && typeof args.name === "string") {
+                fullText = `-# ⚡ Using skill \`${args.name}\``;
+            }
+            if (call.function.name !== "use_skill") {
+                const argEntries = Object.entries(args);
+                if (argEntries.length === 1) {
+                    fullText += ` with \`${argEntries[0]![1]}\``;
+                }
             }
 
             const lines = args.shell_command.split('\n');
