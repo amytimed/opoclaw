@@ -136,10 +136,23 @@ function isStableTag(tag: string): boolean {
   return !/(alpha|beta|rc)/i.test(tag);
 }
 
+function baseVersion(tag: string): string {
+  return tag.replace(/^v/i, "").split("-")[0] || tag;
+}
+
+function isPrereleaseTag(tag: string): boolean {
+  return tag.includes("-") || /(alpha|beta|rc)/i.test(tag);
+}
+
 function pickLatestTag(tags: string[], channel: "stable" | "unstable", currentTag: string): string | null {
   const currentIndex = tags.indexOf(currentTag);
   const candidates = currentIndex >= 0 ? tags.slice(0, currentIndex) : tags;
+  const currentIsStable = isStableTag(currentTag);
+  const currentBase = baseVersion(currentTag);
   for (const tag of candidates) {
+    if (currentIsStable && isPrereleaseTag(tag) && baseVersion(tag) === currentBase) {
+      continue;
+    }
     if (channel === "unstable") return tag;
     if (isStableTag(tag)) return tag;
   }
